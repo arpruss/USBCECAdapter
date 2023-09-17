@@ -11,9 +11,8 @@
 // The storage method is incompatible with the one implemented by the EEPROM-emulation library, as it's optimized
 // for our single-byte usage case. 
 
-static uint32_t pageBase;
-static uint8_t storage[254];
-static uint8_t valid[256/8];
+uint32_t pageBase;
+uint8 storage[255];
 
 static boolean invalid = true;
 
@@ -45,15 +44,11 @@ static bool erasePages() {
 }
 */
 
-bool EEPROM8_checkValue(uint8_t variable) {
-    return 0 != (valid[variable/8] & (1<<(variable%8)));
-}
-
 uint8 EEPROM8_getValue(uint8_t variable) {
-    if (variable < 255)
-        return storage[variable];
-    else
+    if (variable>=255)
         return 0;
+    else
+        return storage[variable];
 }
 
 static bool writeHalfWord(uint32_t address, uint16_t halfWord) {
@@ -75,7 +70,6 @@ boolean EEPROM8_storeValue(uint8_t variable, uint8_t value) {
     return true;
     
   storage[variable] = value;
-  valid[variable/8] |= (1<<(variable%8));
     
   for (uint32_t offset = 4 ; offset < EEPROM_PAGE_SIZE ; offset+=2) {
     if (GET_HALF_WORD(pageBase+offset) == 0xFFFF) {
@@ -103,20 +97,17 @@ boolean EEPROM8_storeValue(uint8_t variable, uint8_t value) {
 }
 
 
-void EEPROM8_reset(void) {
+static void EEPROM8_reset(void) {
   if (erasePage(pageBase)) {
     invalid = false;
   }
   else {
     invalid = true;
   }
-  for(uint32_t i=0; i<255; i++) {
+  for(uint32_t i=0; i<255; i++)
     storage[i] = 0;
-  }
-  for(uint32_t i=0; i<256/8; i++) {
-    valid[i] = 0;
-  }
 }
+
 
 void EEPROM8_init(void) {
   uint32_t flashSize = *(uint16 *) (0x1FFFF7E0);
@@ -130,10 +121,8 @@ void EEPROM8_init(void) {
   }
   for (uint32_t offset = 4 ; offset < EEPROM_PAGE_SIZE ; offset+=2) {
     uint8_t i = GET_BYTE(pageBase+offset);
-    if (i < 255) {
+    if (i < 255)
         storage[i] = GET_BYTE(pageBase+offset+1);
-        valid[i/8] |= (1<<(i%8));
-    }
   }
   invalid = false;
 }
