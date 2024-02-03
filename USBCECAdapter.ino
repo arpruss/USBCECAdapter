@@ -38,6 +38,7 @@ enum {
   MODE_KEYBOARD = 0,
   MODE_CONSUMER = 1,
   MODE_SERIAL = 2,
+  MODE_CHROMECAST = 3,
   MODE_UNDEFINED = 0xFF
 };
 
@@ -45,10 +46,15 @@ uint8 mode = MODE_KEYBOARD;
 uint8 monitor = 0;
 uint8 promiscuous = 0;
 
+#define ALT_ESC 0x8000
+
+#define CONSUMER 0x8000
+
 const struct {
   uint8_t cec;
   uint16_t keyboard;
   uint16_t consumer;
+  uint16_t chromeCast;
 } dict[] = {
   {0,KEY_RETURN,HIDConsumer::MENU_PICK},
   {1,KEY_UP_ARROW,HIDConsumer::MENU_UP},
@@ -56,10 +62,11 @@ const struct {
   {3,KEY_LEFT_ARROW,HIDConsumer::MENU_LEFT},
   {4,KEY_RIGHT_ARROW,HIDConsumer::MENU_RIGHT}, 
   {0xD,KEY_BACKSPACE,HIDConsumer::MENU_ESCAPE},
-  {0xB,KEY_HID_OFFSET+0x76,HIDConsumer::MENU},
-  {0x48,KEY_PAGE_UP,HIDConsumer::REWIND},
-  {0x49,KEY_PAGE_DOWN,HIDConsumer::FAST_FORWARD},
-  {0x46,' ',HIDConsumer::PLAY_OR_PAUSE}
+  {0x48,KEY_PAGE_UP,HIDConsumer::REWIND,KEY_PAGE_UP},
+  {0x49,KEY_PAGE_DOWN,HIDConsumer::FAST_FORWARD,KEY_PAGE_DOWN},
+  {0x46,' ',HIDConsumer::PLAY_OR_PAUSE},
+  {0xB,KEY_HID_OFFSET+0x76,HIDConsumer::MENU,0x8000|HIDConsumer::HOMEPAGE},
+//  {0xB,ALT_ESC,HIDConsumer::HOMEPAGE},
 };
 
 #define DICT_SIZE (sizeof dict / sizeof *dict)
@@ -89,6 +96,9 @@ void MyDbgPrint(const char* fmt, ...)
         }
 }
 
+bool keyboardPressed = false;
+bool consumerPressed = false;
+
 void receiver(int source, int dest, unsigned char* buffer, int count) {
   MyDbgPrint("Packet received at %ld: %02d -> %02d: %02X", millis(), source, dest, ((source&0x0f)<<4)|(dest&0x0f));
   for (int i = 0; i < count; i++)
@@ -97,33 +107,57 @@ void receiver(int source, int dest, unsigned char* buffer, int count) {
   if (count == 2 && buffer[0] == 0x44) {
       for (unsigned i=0; i<DICT_SIZE; i++)
         if (dict[i].cec == buffer[1]) {
-          if (mode == MODE_KEYBOARD) 
-            Keyboard.press(dict[i].keyboard);
-          else if (mode == MODE_CONSUMER)
-            Consumer.press(dict[i].consumer);
+          uint16_t key;
+          if (mode == MODE_KEYBOARD) {
+            key = dict[i].keyboard;
+          }
+          else if (mode == MODE_CONSUMER) {
+            key = dict[i].consumer | CONSUMER;
+          }
+          else if (mode == MODE_CHROMECAST) {
+            key = dict[i].chromeCast;
+          }
+          if (key == ALT_ESC) {
+            Keyboard.press(KEY_LEFT_ALT);
+            Keyboard.press(KEY_ESC);
+            Keyboard.release(KEY_ESC);
+            Keyboard.release(KEY_LEFT_ALT); 
+          }
+          else if (key & MODE_CONSUMER) {
+            Consumer.press(key & ~MODE_CONSUMER);
+            consumerPressed = true;
+          }
+          else {
+            Keyboard.press(key);
+            keyboardPressed = true;
+          }
         }
   }
   else if (count >= 1 && buffer[0] == 0x45) {
-    if (mode == MODE_KEYBOARD) {
+    if (keyboardPressed) {
       Keyboard.releaseAll();
+      keyboardPressed = false;
     }
-    else if (mode == MODE_CONSUMER) {
+    if (consumerPressed) {
       Consumer.release();
+      consumerPressed = false;
     }
   }
 }
 
 void setup() {
+    EEPROM8_init();
     mode = EEPROM8_getValue(EEPROM_MODE);
-    deviceType = EEPROM8_checkValue(EEPROM_DEVICE) ? EEPROM8_getValue(EEPROM_DEVICE) : (uint8)DEVICE_TYPE;
+    deviceType = EEPROM8_getValue(EEPROM_DEVICE) ? EEPROM8_getValue(EEPROM_DEVICE) : (uint8)DEVICE_TYPE;
     monitor = EEPROM8_getValue(EEPROM_MONITOR);
     promiscuous = EEPROM8_getValue(EEPROM_PROMISCUOUS);
-    if (EEPROM8_checkValue(EEPROM_PHYSICAL_ADDRESS_HIGH) && EEPROM8_checkValue(EEPROM_PHYSICAL_ADDRESS_LOW)) {
+    if (EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) && EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_LOW)) {
       physicalAddress = ((uint16_t)EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) << 8)|EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH);
     }
     ceclient.setPhysicalAddress(physicalAddress);
     ceclient.setPromiscuous(promiscuous||monitor);
     ceclient.setMonitorMode(monitor);
+    ceclient.Initialize((CEC_LogicalDevice::CEC_DEVICE_TYPE)deviceType);
 
     HID.begin(CompositeSerial, reportDescription, sizeof(reportDescription));
     
@@ -203,9 +237,9 @@ uint8* parseHexData(char* command, unsigned* lengthP) {
 void showNibble(uint8_t nibble) {
   nibble &= 0xF;
   if (nibble < 10)
-    Serial.write('0'+nibble);
+    CompositeSerial.write('0'+nibble);
   else
-    Serial.write('a'-10+nibble);
+    CompositeSerial.write('a'-10+nibble);
 }
 
 void processCommand(char* command) {
@@ -218,6 +252,10 @@ void processCommand(char* command) {
     else if (!strcmp(command,"consumer")) {
       switchMode(MODE_CONSUMER);
       CompositeSerial.println("ok mode consumer");
+    }
+    else if (!strcmp(command,"chromecast")) {
+      switchMode(MODE_CHROMECAST);
+      CompositeSerial.println("ok mode chromecast");
     }
     else if (!strcmp(command,"serial")) {
       switchMode(MODE_SERIAL);
@@ -355,4 +393,3 @@ void loop() {
       }
     }
 }
-

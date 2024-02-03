@@ -126,4 +126,3 @@ void EEPROM8_init(void) {
   }
   invalid = false;
 }
-
