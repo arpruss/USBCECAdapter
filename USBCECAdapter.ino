@@ -13,6 +13,7 @@
 #define EEPROM_DEVICE                3
 #define EEPROM_MONITOR               4
 #define EEPROM_PROMISCUOUS           5
+#define EEPROM_QUIET                 6
 
 #define CEC_PHYSICAL_ADDRESS    0x1000
 #define CEC_INPUT_PIN           PA0
@@ -23,6 +24,7 @@ uint8_t deviceType = DEVICE_TYPE;
 USBHID HID;
 HIDKeyboard Keyboard(HID);
 HIDConsumer Consumer(HID);
+HIDDesktop Desktop(HID);
 USBCompositeSerial CompositeSerial;
 
 #define MAX_COMMAND 256
@@ -32,6 +34,7 @@ unsigned commandLineLength = 0;
 const uint8_t reportDescription[] = {
    HID_KEYBOARD_REPORT_DESCRIPTOR(),
    HID_CONSUMER_REPORT_DESCRIPTOR(),
+   HID_DESKTOP_REPORT_DESCRIPTOR(),
 };
 
 enum {
@@ -44,10 +47,10 @@ enum {
 
 uint8 mode = MODE_KEYBOARD;
 uint8 monitor = 0;
+uint8 quiet = 0;
 uint8 promiscuous = 0;
 
-#define ALT_ESC 0x8000
-
+#define ALT_ESC 0x7FFF
 #define CONSUMER 0x8000
 
 const struct {
@@ -56,17 +59,18 @@ const struct {
   uint16_t consumer;
   uint16_t chromeCast;
 } dict[] = {
+//  {0x46,' ',HIDConsumer::PLAY_OR_PAUSE,CONSUMER|0x34},
+//  {0,KEY_RETURN,HIDConsumer::MENU_PICK,KEY_POWER},
   {0,KEY_RETURN,HIDConsumer::MENU_PICK},
   {1,KEY_UP_ARROW,HIDConsumer::MENU_UP},
   {2,KEY_DOWN_ARROW,HIDConsumer::MENU_DOWN},
   {3,KEY_LEFT_ARROW,HIDConsumer::MENU_LEFT},
   {4,KEY_RIGHT_ARROW,HIDConsumer::MENU_RIGHT}, 
   {0xD,KEY_BACKSPACE,HIDConsumer::MENU_ESCAPE},
-  {0x48,KEY_PAGE_UP,HIDConsumer::REWIND,KEY_PAGE_UP},
-  {0x49,KEY_PAGE_DOWN,HIDConsumer::FAST_FORWARD,KEY_PAGE_DOWN},
+  {0x48,KEY_PAGE_UP,HIDConsumer::REWIND},
+  {0x49,KEY_PAGE_DOWN,HIDConsumer::FAST_FORWARD},
   {0x46,' ',HIDConsumer::PLAY_OR_PAUSE},
-  {0xB,KEY_HID_OFFSET+0x76,HIDConsumer::MENU,0x8000|HIDConsumer::HOMEPAGE},
-//  {0xB,ALT_ESC,HIDConsumer::HOMEPAGE},
+  {0xB,KEY_HID_OFFSET+0x76,HIDConsumer::MENU,CONSUMER|HIDConsumer::HOMEPAGE},
 };
 
 #define DICT_SIZE (sizeof dict / sizeof *dict)
@@ -82,6 +86,8 @@ QuietCEClient ceclient(CEC_PHYSICAL_ADDRESS, CEC_INPUT_PIN, CEC_OUTPUT_PIN);
 
 void MyDbgPrint(const char* fmt, ...)
 {
+        if (quiet)
+          return;
         char FormatBuffer[128]; 
         va_list args;
         va_start(args, fmt);
@@ -100,11 +106,24 @@ bool keyboardPressed = false;
 bool consumerPressed = false;
 
 void receiver(int source, int dest, unsigned char* buffer, int count) {
-  MyDbgPrint("Packet received at %ld: %02d -> %02d: %02X", millis(), source, dest, ((source&0x0f)<<4)|(dest&0x0f));
+  uint8_t srcDest = ((source&0x0f)<<4)|(dest&0x0f);
+  MyDbgPrint("Packet received at %ld: %02d -> %02d: %02X", millis(), source, dest, srcDest);
   for (int i = 0; i < count; i++)
     MyDbgPrint(":%02X", buffer[i]);
   MyDbgPrint("\n");
-  if (count == 2 && buffer[0] == 0x44) {
+  if (mode == MODE_CHROMECAST && srcDest == 0x0F) {
+    if (count == 1 && buffer[0] == 0x36) {
+      CompositeSerial.println("sleep");
+      Desktop.press(HIDDesktop::SLEEP);
+      Desktop.release();      
+    }
+    else if (count == 3 && buffer[0] == 0x86 && buffer[1] == (physicalAddress >> 8) && buffer[2] == (physicalAddress & 0xFF)) {
+      CompositeSerial.println("wakeup");
+      Desktop.press(HIDDesktop::WAKEUP);
+      Desktop.release();      
+    }
+  }
+  if (count == 2 && buffer[0] == 0x44 && source == 0x00 && dest == deviceType) { 
       for (unsigned i=0; i<DICT_SIZE; i++)
         if (dict[i].cec == buffer[1]) {
           uint16_t key;
@@ -123,11 +142,11 @@ void receiver(int source, int dest, unsigned char* buffer, int count) {
             Keyboard.release(KEY_ESC);
             Keyboard.release(KEY_LEFT_ALT); 
           }
-          else if (key & MODE_CONSUMER) {
-            Consumer.press(key & ~MODE_CONSUMER);
+          else if (key & CONSUMER) {
+            Consumer.press(key & ~CONSUMER);
             consumerPressed = true;
           }
-          else {
+          else if (key != 0) {
             Keyboard.press(key);
             keyboardPressed = true;
           }
@@ -150,6 +169,7 @@ void setup() {
     mode = EEPROM8_getValue(EEPROM_MODE);
     deviceType = EEPROM8_getValue(EEPROM_DEVICE) ? EEPROM8_getValue(EEPROM_DEVICE) : (uint8)DEVICE_TYPE;
     monitor = EEPROM8_getValue(EEPROM_MONITOR);
+    quiet = EEPROM8_getValue(EEPROM_QUIET);
     promiscuous = EEPROM8_getValue(EEPROM_PROMISCUOUS);
     if (EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) && EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_LOW)) {
       physicalAddress = ((uint16_t)EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) << 8)|EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH);
@@ -294,6 +314,17 @@ void processCommand(char* command) {
       CompositeSerial.println("input error");
     }
   }
+  else if (!strncmp(command,"quiet ",6)) {
+    unsigned n;
+    uint8* buffer = parseHexData(command+6,&n);
+    if (n == 1) {
+      quiet = !!buffer[0];
+      EEPROM8_storeValue(EEPROM_QUIET, quiet);
+    }
+    else {
+      CompositeSerial.println("input error");
+    }
+  }
   else if (!strncmp(command,"physical ", 9)) {
     unsigned n;
     uint8* buffer = parseHexData(command+9,&n);
@@ -335,6 +366,9 @@ void processCommand(char* command) {
         case MODE_CONSUMER:
           CompositeSerial.println("consumer");
           break;
+        case MODE_CHROMECAST:
+          CompositeSerial.println("chromecast");
+          break;
       }
       CompositeSerial.print("physical ");
       showNibble(physicalAddress >> 12);
@@ -351,16 +385,19 @@ void processCommand(char* command) {
       showNibble(promiscuous);
       CompositeSerial.print("\ndevice ");
       showNibble(deviceType);
+      CompositeSerial.print("\nquiet ");
+      showNibble(quiet);
       CompositeSerial.print("\nlogical ");
       showNibble(ceclient.getLogicalAddress());
       CompositeSerial.println("\ndone");
   }
   else if (!strcmp(command, "help")) {
       CompositeSerial.println("tx destination nn:nn:nn:nn:...");
-      CompositeSerial.println("mode [keyboard|consumer|serial]");
+      CompositeSerial.println("mode [keyboard|consumer|chromecast|serial]");
       CompositeSerial.println("physical a.b.c.d");
       CompositeSerial.println("monitor 0|1");
       CompositeSerial.println("promiscuous 0|1");
+      CompositeSerial.println("quiet 0|1");
       CompositeSerial.println("device n");
       CompositeSerial.println("show");
       CompositeSerial.println("init");
@@ -369,7 +406,7 @@ void processCommand(char* command) {
       CompositeSerial.println("input error");
   }
 }
-
+  
 void loop() {
     ceclient.run();
     while(CompositeSerial.available()) {
