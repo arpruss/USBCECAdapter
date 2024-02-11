@@ -5,7 +5,23 @@
 
 #define memzero(p,n) memset((p),0,(n))
 
+#define CHROMECAST_ON_OFF
 #define DEVICE_TYPE                  CEC_LogicalDevice::CDT_PLAYBACK_DEVICE //CEC_LogicalDevice::CDT_RECORDING_DEVICE
+
+enum {
+  MODE_KEYBOARD = 0,
+  MODE_CONSUMER = 1,
+  MODE_SERIAL = 2,
+  MODE_CHROMECAST = 3,
+  MODE_UNDEFINED = 0xFF
+};
+
+#define DEFAULT_MODE             MODE_CHROMECAST
+#define DEFAULT_PHYSICAL_ADDRESS 0x1000
+#define DEFAULT_DEVICE           DEVICE_TYPE
+#define DEFAULT_MONITOR          1
+#define DEFAULT_PROMISCUOUS      0
+#define DEFAULT_QUIET            1
 
 #define EEPROM_MODE                  0
 #define EEPROM_PHYSICAL_ADDRESS_HIGH 1
@@ -14,6 +30,7 @@
 #define EEPROM_MONITOR               4
 #define EEPROM_PROMISCUOUS           5
 #define EEPROM_QUIET                 6
+#define EEPROM_DEFAULTS_SET          7
 
 #define CEC_PHYSICAL_ADDRESS    0x1000
 #define CEC_INPUT_PIN           PA0
@@ -21,10 +38,13 @@
 
 uint16_t physicalAddress = CEC_PHYSICAL_ADDRESS;
 uint8_t deviceType = DEVICE_TYPE;
+uint8_t logicalDevice = 15;
 USBHID HID;
 HIDKeyboard Keyboard(HID);
 HIDConsumer Consumer(HID);
+#ifdef CHROMECAST_ON_OFF
 HIDDesktop Desktop(HID);
+#endif
 USBCompositeSerial CompositeSerial;
 
 #define MAX_COMMAND 256
@@ -34,15 +54,9 @@ unsigned commandLineLength = 0;
 const uint8_t reportDescription[] = {
    HID_KEYBOARD_REPORT_DESCRIPTOR(),
    HID_CONSUMER_REPORT_DESCRIPTOR(),
+#ifdef CHROMECAST_ON_OFF   
    HID_DESKTOP_REPORT_DESCRIPTOR(),
-};
-
-enum {
-  MODE_KEYBOARD = 0,
-  MODE_CONSUMER = 1,
-  MODE_SERIAL = 2,
-  MODE_CHROMECAST = 3,
-  MODE_UNDEFINED = 0xFF
+#endif   
 };
 
 uint8 mode = MODE_KEYBOARD;
@@ -59,8 +73,6 @@ const struct {
   uint16_t consumer;
   uint16_t chromeCast;
 } dict[] = {
-//  {0x46,' ',HIDConsumer::PLAY_OR_PAUSE,CONSUMER|0x34},
-//  {0,KEY_RETURN,HIDConsumer::MENU_PICK,KEY_POWER},
   {0,KEY_RETURN,HIDConsumer::MENU_PICK},
   {1,KEY_UP_ARROW,HIDConsumer::MENU_UP},
   {2,KEY_DOWN_ARROW,HIDConsumer::MENU_DOWN},
@@ -112,18 +124,23 @@ void receiver(int source, int dest, unsigned char* buffer, int count) {
     MyDbgPrint(":%02X", buffer[i]);
   MyDbgPrint("\n");
   if (mode == MODE_CHROMECAST && srcDest == 0x0F) {
+#ifdef CHROMECAST_ON_OFF    
     if (count == 1 && buffer[0] == 0x36) {
       CompositeSerial.println("sleep");
       Desktop.press(HIDDesktop::SLEEP);
       Desktop.release();      
     }
     else if (count == 3 && buffer[0] == 0x86 && buffer[1] == (physicalAddress >> 8) && buffer[2] == (physicalAddress & 0xFF)) {
-      CompositeSerial.println("wakeup");
+      CompositeSerial.println("wakeup"); //TODO?
       Desktop.press(HIDDesktop::WAKEUP);
       Desktop.release();      
     }
+#endif    
   }
-  if (count == 2 && buffer[0] == 0x44 && source == 0x00 && dest == deviceType) { 
+  if (buffer[0] == 0x84 && buffer[1] == physicalAddress >> 8 && buffer[2] == (physicalAddress & 0xFF)) {
+    CompositeSerial.println("hello");
+  }
+  if (count == 2 && buffer[0] == 0x44 && source == 0x00 && dest == ceclient.getLogicalAddress()) { 
       for (unsigned i=0; i<DICT_SIZE; i++)
         if (dict[i].cec == buffer[1]) {
           uint16_t key;
@@ -166,14 +183,30 @@ void receiver(int source, int dest, unsigned char* buffer, int count) {
 
 void setup() {
     EEPROM8_init();
-    mode = EEPROM8_getValue(EEPROM_MODE);
-    deviceType = EEPROM8_getValue(EEPROM_DEVICE) ? EEPROM8_getValue(EEPROM_DEVICE) : (uint8)DEVICE_TYPE;
-    monitor = EEPROM8_getValue(EEPROM_MONITOR);
-    quiet = EEPROM8_getValue(EEPROM_QUIET);
-    promiscuous = EEPROM8_getValue(EEPROM_PROMISCUOUS);
-    if (EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) && EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_LOW)) {
-      physicalAddress = ((uint16_t)EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) << 8)|EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH);
+
+    if (!EEPROM8_getValue(EEPROM_DEFAULTS_SET)) {
+      mode = DEFAULT_MODE;
+      deviceType = DEFAULT_DEVICE;
+      monitor = DEFAULT_MONITOR;
+      quiet = DEFAULT_QUIET;
+      promiscuous = DEFAULT_PROMISCUOUS;
+      physicalAddress = DEFAULT_PHYSICAL_ADDRESS;      
+      EEPROM8_storeValue(EEPROM_MODE, mode);
+      EEPROM8_storeValue(EEPROM_DEVICE, deviceType);
+      EEPROM8_storeValue(EEPROM_MONITOR, monitor);
+      EEPROM8_storeValue(EEPROM_QUIET, quiet);
+      EEPROM8_storeValue(EEPROM_PROMISCUOUS, promiscuous);
+      EEPROM8_storeValue(EEPROM_DEFAULTS_SET, 1);
     }
+    else {
+      mode = EEPROM8_getValue(EEPROM_MODE);
+      deviceType = EEPROM8_getValue(EEPROM_DEVICE);
+      monitor = EEPROM8_getValue(EEPROM_MONITOR);
+      quiet = EEPROM8_getValue(EEPROM_QUIET);
+      promiscuous = EEPROM8_getValue(EEPROM_PROMISCUOUS);
+      physicalAddress = ((uint16_t)EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_HIGH) << 8)|EEPROM8_getValue(EEPROM_PHYSICAL_ADDRESS_LOW);
+    }
+    
     ceclient.setPhysicalAddress(physicalAddress);
     ceclient.setPromiscuous(promiscuous||monitor);
     ceclient.setMonitorMode(monitor);
