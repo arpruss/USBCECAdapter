@@ -137,10 +137,16 @@ void receiver(int source, int dest, unsigned char* buffer, int count) {
     }
 #endif    
   }
-  if (buffer[0] == 0x84 && buffer[1] == physicalAddress >> 8 && buffer[2] == (physicalAddress & 0xFF)) {
-    CompositeSerial.println("hello");
-  }
-  if (count == 2 && buffer[0] == 0x44 && source == 0x00 && dest == ceclient.getLogicalAddress()) { 
+  int logical = ceclient.getLogicalAddress();
+  if (logical == 15)
+    logical = deviceType; // TODO
+  if (count == 2 && buffer[0] == 0x44 && source == 0x00 && dest == logical) { 
+      if (mode == MODE_CHROMECAST && buffer[1] == 0xB) {
+        buffer[1] = 0x9; // root menu
+        ceclient.write(dest, buffer, count, source);
+        return;
+      } 
+      
       for (unsigned i=0; i<DICT_SIZE; i++)
         if (dict[i].cec == buffer[1]) {
           uint16_t key;
@@ -210,6 +216,7 @@ void setup() {
     ceclient.setPhysicalAddress(physicalAddress);
     ceclient.setPromiscuous(promiscuous||monitor);
     ceclient.setMonitorMode(monitor);
+    ceclient.setMonitorModeWriting(true);
     ceclient.Initialize((CEC_LogicalDevice::CEC_DEVICE_TYPE)deviceType);
 
     HID.begin(CompositeSerial, reportDescription, sizeof(reportDescription));
