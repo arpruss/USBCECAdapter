@@ -1,6 +1,6 @@
 #include <USBComposite.h>
 #include <stdarg.h>
-#include "CEClient.h"
+#include "CEClient.h" // https://github.com/arpruss/cec
 #include <ctype.h>
 
 #define memzero(p,n) memset((p),0,(n))
